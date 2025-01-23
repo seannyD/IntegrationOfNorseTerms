@@ -1,1 +1,1 @@
-Linear: beta = -29.115, z = -16.209, Wald p < 0.001, LLDiff = 108.4, df = 1, p < 0.001; Quadratic: beta = 63.885, z = 14.413, Wald p < 0.001, LLDiff = 55.2, df = 1, p < 0.001; Cubic: beta = -39.313, z = -13.199, Wald p < 0.001, LLDiff = 89.2, df = 1, p < 0.001
+Linear: beta = -32.43, z = -18.2, Wald p < 0.001, LLDiff = 102.6, df = 1, p < 0.001; Quadratic: beta = 77.441, z = 17.015, Wald p < 0.001, LLDiff = 23.2, df = 1, p < 0.001; Cubic: beta = -51.691, z = -16.373, Wald p < 0.001, LLDiff = 138.1, df = 1, p < 0.001
