@@ -6,7 +6,7 @@ Repository for data, code and results from:
 
  The file `data/SharedIntegrationOfCognatesData.xlsx` has the original transcribed data. This is cleaned and processed by the script `analysis/analyseTextDistances.py`, which draws some code from `analysis/CLTSFeatureBasedAlignment.py` which is mainly contributed by Johann Mattis List (see [this post](https://calc.hypotheses.org/1962) and [this gist](https://gist.github.com/LinguList/7fac44813572f65259c872ef89fa64ad)). The script calculates the distances between pairs of Norse and English forms according to three measures:
 
--  Sound-based distance from Keller (2023).
+-  Sound-based distance from Keller (2020).
 -  A feature-based distance.
 -  A historical distance that uses the likelihood of one segment historically replacing another.
 
