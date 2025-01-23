@@ -1,0 +1,1213 @@
+---
+title: "Supporting Materials for 'The Integration of Norse-Derived Terms in English'"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    number_sections: true
+papersize: a4
+editor_options: 
+  chunk_output_type: console
+---
+
+# Introduction
+
+The analysis covers the following sources:
+
+-  FCPC Peterborough, 1154 (12th C)
+-  Ormulum South Lincolnshire, ca. 1180 (12th C)
+-  Havelok, composed in Lincolnshire, but manuscript from West Norfolk 13th century (13th C)
+-  Genesis and Exodus, composed in East Midlands, manuscript from West Norfolk 13th/14th century (14th C)
+-  Cursor mundi, c. 1300 (14th C)
+-  Gawain-poet Cheshire / Staffordshire, ca. 1380 (14th C)
+-  St Erkenwald, written late fourteenth or the early fifteenth century, manuscript from 1477 (15th C)
+-  Mannyng South Lincolnshire, ca. 1450 (15th C)
+-  Wars of Alexander northern England, ca. 1450 (15th C)
+-  Texts from Lincolnshire, Norfolk and Nottinghamshire from the Corpus of Middle English (1399-1525), (15th C)
+-  Texts by Richard Rolle (before 1465), (15thC)
+
+The data analysed here is the product of several processing steps. The file `data/SharedIntegrationOfCognatesData.xlsx` has the original transcribed data. This is cleaned and processed by the script `analysis/analyseTextDistances.py`, which draws some code from `analysis/CLTSFeatureBasedAlignment.py` which is mainly contributed by Johann Mattis List (see https://calc.hypotheses.org/1962 and https://gist.github.com/LinguList/7fac44813572f65259c872ef89fa64ad). The script calculates the distances between pairs of Norse and English forms according to three measures:
+
+-  Simple distance from Keller (2023).
+-  A feature-based distance.
+-  A historical distance that uses the likelihood of one segment historically replacing another.
+
+Each row in the data represents a comparison between a Norse form and an English form within a given cognate set, including the three measures of distance and frequency of occurance in each source.
+
+## Variables
+
+The variables in the data (and some that are calculated in the script below) are described as follows:
+
+"Set": the cognate set the pair of comparisons belong to.
+
+"Class": the word class the set can appear as (and some binary variables representing the same information).
+
+"NorseLexeme", "EngLexeme", "NorseForm", "EngForm": The lexemes and full forms for Norse and English terms.
+
+"NorseFormDiagnostic", "EngFormDiagnostic": the relevant parts of the form that are diagnostic of the etymology.
+
+"Alignment", "FeatureAlignment", "HistoricalAlignment": multiple sequence alignment of the forms according to the three measures.
+
+"RawDistance", "NormDistance", "RawFeatureDistance", "NormFeatureDistance", "RawHistoricalDistance" , "NormHistoricalDistance": Raw and normed distances between 
+
+"NFreq...", "EFreq...": Frequencies of the Norse and English forms in each source.
+
+"Alliteration": only true if the source uses alliterative verse and the Norse form and the English form do *not* start with segments in the same alliterative category. That is, it is true if part of the decision about which form to use might be influenced by the need to alliterate. The alliterative texts include: Gawain, St Erkenwold, Wars of Alexander.
+
+"totalNFreq": The total Norse frequency across all sources. 
+
+"totalEFreq": The total English frequency across all sources.
+
+"NorseProp": The proportion of total Norse frequency compared to total Norse Frequency + total English Frequency.
+
+"NorseDiagnosticScore": Whether or not the forms differ according to a specific segments that are characteristicly diagnostic of Norse etymology.
+
+
+```{r echo=F,eval=F}
+try(setwd("~/OneDrive - Cardiff University/Research/Cardiff/HistoricalTextDistances/project/analysis"))
+```
+
+\newpage
+\clearpage
+
+
+# Load Libraries
+
+```{r message=F,warning=F}
+library(openxlsx)
+library(sjPlot)
+library(lme4)
+library(mgcv)
+library(party)
+library(ggplot2)
+library(phangorn)
+library(gridExtra)
+library(GGally)
+library(MuMIn)
+library(brms)
+library(ggeffects)
+```
+
+# Load data
+
+Load data created by the python program and convert variables to their proper type:
+
+```{r}
+d = read.xlsx("../data/IntegrationDistances.xlsx",1)
+# Ignore numerals in set name
+d$Set = gsub("[0-9]","",d$Set)
+d$Set = as.factor(d$Set)
+d$EngLexeme = factor(d$EngLexeme)
+d$ELen = nchar(d$EngForm)
+d$NLen = nchar(d$NorseForm)
+
+norseFrequencyColumns = c("NFreqFCPC","NFreqGawainPoet",
+                          "NFreqGenAndEx","NFreqHavelok",
+                          "NFreqMannyng","NFreqOrmulum", 
+                          'NFreqWarsAlexander',
+                          "NFreqStErkenwald", "NFreqCursorMundi",
+                          "NFreqLinc","NFreqNott","NFreqNorf","NFreqRolle")
+
+englishFrequencyColumns = c("EFreqFCPC","EFreqGawainPoet",
+                            "EFreqGenAndEx","EFreqHavelok",
+                            "EFreqMannyng","EFreqOrmulum",
+                            "EFreqWarsAlexander",
+                            "EFreqStErkenwald", "EFreqCursorMundi",
+                            "EFreqLinc","EFreqNott","EFreqNorf","EFreqRolle")
+```
+
+
+Convert frequencies to numeric type:
+
+```{r warning=F}
+for(col in c(norseFrequencyColumns,englishFrequencyColumns)){
+  d[,col] = as.numeric(d[,col])
+}
+```
+
+Calculate the total frequency across all sources and the proportion of Norse forms compared to all forms:
+
+```{r}
+d$totalNFreq = rowSums(d[,norseFrequencyColumns],na.rm = T)
+d$totalEFreq = rowSums(d[,englishFrequencyColumns],na.rm = T)
+d$NorseProp = d$totalNFreq/ rowSums(d[,c("totalNFreq","totalEFreq")],na.rm = T)
+
+d = d[!is.na(d$NorseProp),]
+```
+
+Scale the distances to lie between 0 and 1:
+
+```{r}
+d$NormDistance = as.numeric(d$NormDistance)
+d$NormFeatureDistance = as.numeric(d$NormFeatureDistance)
+d$NormHistoricalDistance = as.numeric(d$NormHistoricalDistance)
+
+# Scale distances
+normX = function(X){
+  (X-min(X))/(max(X)-min(X))
+}
+d$NormDistance = normX(d$NormDistance)
+d$NormFeatureDistance = normX(d$NormFeatureDistance)
+d$NormHistoricalDistance = normX(d$NormHistoricalDistance)
+
+d$NormDistance.rank = 
+  rank(d$NormDistance,ties.method = "max")
+d$NormFeatureDistance.rank = 
+  rank(d$NormFeatureDistance,ties.method = "max")
+d$NormHistoricalDistance.rank =
+  rank(d$NormHistoricalDistance,ties.method = "max")
+```
+
+## Examples
+
+```{r eval=F,echo=F}
+differentAlignments = 
+  (d$Alignment != d$FeatureAlignment) & 
+  (d$Alignment != d$HistoricalAlignment) &
+  (d$HistoricalAlignment != d$FeatureAlignment)
+
+sum(differentAlignments)
+
+x = d[d$NorseForm=="graɪθ",][1,]
+t(x)
+x$NormDistance.rank
+x$NormFeatureDistance.rank
+x$NormHistoricalDistance.rank
+```
+
+\clearpage
+\newpage
+
+# Descriptive statistics
+
+
+Number of English forms: `r length(unique(d$EngLexeme))`
+
+Number of Norse forms: `r length(unique(d$NorseLexeme))`
+
+Number of comparisons: `r nrow(d)`
+
+Number of sets: `r length(unique(d$Set))`
+
+Proportion of Norse and English terms (relative total frequency of each type):
+
+```{r}
+dx = rbind(
+  data.frame(
+    Lang = "Norse",
+    Freq = colSums(d[,norseFrequencyColumns],na.rm = T),
+    Source = c("FCPC","Gawain-poet","Genesis & Exodus","Havelok",
+                "Mannyng", "Ormulum","Wars of Alexander",
+                "St Erkenwald", "Cursor Mundi",
+               "Lincolnshire","Nottinghamshire", 
+               "Norfolk", "Rolle")),
+  data.frame(
+    Lang = "English",
+    Freq = colSums(d[,englishFrequencyColumns],na.rm = T),
+    Source = c("FCPC","Gawain-poet","Genesis & Exodus","Havelok",
+                "Mannyng", "Ormulum","Wars of Alexander",
+                "St Erkenwald", "Cursor Mundi",
+               "Lincolnshire","Nottinghamshire", 
+               "Norfolk", "Rolle")))
+  
+dx$Source = factor(dx$Source,
+  levels=c("FCPC","Ormulum","Havelok",
+                 "Genesis & Exodus",
+                 "Cursor Mundi","Mannyng",
+                 "Gawain-poet", "Wars of Alexander",
+                 "St Erkenwald",
+           "Lincolnshire","Nottinghamshire", 
+               "Norfolk", "Rolle"))
+
+gRawFreq = ggplot(dx,aes(x=Source,y=Freq,fill=Lang)) +
+  geom_bar(stat="identity",position = 'dodge') + 
+  ylab("Total Frequency") +
+  scale_fill_discrete(breaks=c('Norse',"English"),
+                      name = "Origin") +
+  coord_flip() 
+gRawFreq
+
+gPropFreq = ggplot(dx,aes(x=Source,y=Freq,fill=Lang)) +
+  geom_bar(stat="identity",position = 'fill') + 
+  ylab("Relative Frequency") +
+  scale_fill_discrete(breaks=c('Norse',"English"),
+                      name = "Origin")+
+  coord_flip()
+gPropFreq
+
+pdf("../results/GRawFreq.pdf",width=5,height=3.5)
+gRawFreq
+dev.off()
+
+pdf("../results/GPropFreq.pdf",width=5,height=3.5)
+gPropFreq
+dev.off()
+
+
+pdf("../results/GRawAndPropFreq.pdf",width=6,height=3)
+  grid.arrange(gRawFreq+
+               theme(legend.position = "none"),
+             gPropFreq +
+               theme(axis.text.y = element_blank(),
+                     axis.title.y = element_blank()),
+             ncol=2)
+dev.off()
+```
+
+Correlations between distance measures:
+
+```{r}
+cor.test(d$NormDistance,d$NormFeatureDistance)
+cor.test(d$NormDistance,d$NormHistoricalDistance)
+cor.test(d$NormFeatureDistance,d$NormHistoricalDistance)
+```
+
+Function for extracting stats:
+
+```{r}
+getStatReport = function(m0,m1,m2,m3,finalModel,outFile){
+  modelComparison = as.data.frame(anova(m0,m1,m2,m3))
+  modelComparison$pChi = round(modelComparison$`Pr(>Chisq)`,3)
+  modelComparison$pChi[modelComparison$pChi==0] = "< 0.001"
+  modelComparison$lldiff = NA
+  modelComparison$lldiff[2:4] = diff(modelComparison$logLik)
+  modelComparison = modelComparison[2:4,]
+  modelComparison$Term = c("Linear","Quadratic","Cubic")
+  
+  coef = as.data.frame(summary(finalModel)$coefficients)
+  rx = which(grepl("Norm",rownames(coef)))
+  coef[rx,"Estimate"] = round(coef[rx,"Estimate"],3)
+  coef[rx,"z value"] = round(coef[rx,"z value"],3)
+  coef[,"Pr(>|z|)"] = round(coef[,"Pr(>|z|)"],3)
+  coef[,"Pr(>|z|)"][coef[,"Pr(>|z|)"] ==0] = "< 0.001"
+  
+  modelComparison$Estimate = coef[rx,"Estimate"]
+  modelComparison$z = coef[rx,"z value"]
+  modelComparison$p = coef[rx,"Pr(>|z|)"]
+  
+  modelComparison = modelComparison[,
+                                    c("Term","BIC","lldiff",
+                                      "Chisq","Df","pChi",
+                                      "Estimate","z","p")]
+  
+  mcx = paste(paste0(c("Linear: ","Quadratic: ","Cubic: "),
+        "beta = ",coef[rx,"Estimate"],
+        ", z = ", coef[rx,"z value"],
+        ", Wald p = ", coef[rx,"Pr(>|z|)"],
+        ", LLDiff = ",round(modelComparison$lldiff,1),
+        ", df = ", modelComparison$Df,
+        ", p = ",modelComparison$pChi),collapse="; ")
+  mcx = gsub("= <","<",mcx)
+  cat(mcx,file=outFile)
+  
+ # mx = rbind(c("","Model Comparison","","","","","Model Estimate","",""),
+ #       names(modelComparison),
+ #       modelComparison)
+  
+  modelComparison$BIC = round(modelComparison$BIC,1)
+  modelComparison$lldiff = round(modelComparison$lldiff,1)
+  modelComparison$Chisq = round(modelComparison$Chisq,1)
+  modelComparison$Estimate = round(modelComparison$Estimate,2)
+  
+  write.csv(modelComparison,file=gsub("\\.txt",".csv",outFile))
+  
+  return(mcx)
+}
+```
+
+\clearpage
+\newpage
+
+
+# Total frequency analysis
+
+The analyses below predict the total frequency across all sources, using the orthographic form as the basis for observations. 
+
+## Simple distance (total frequency)
+
+We use nested model comparison to evaluate whether higher-order variables should be added (i.e. how non-linear the relationships is).
+
+```{r}
+d$NormDistanceChosen = d$NormDistance
+# Baseline model
+m0 = glmer(cbind(totalNFreq,totalEFreq) ~ 
+             1 + (1|Set) + (1|EngLexeme),
+           data = d, family = "binomial")
+# Add the distance measure
+m1 = update(m0,~.+NormDistanceChosen)
+# Add quadratic term
+m2 = update(m1,~.+I(NormDistanceChosen^2))
+# Add cubic term
+m3 = update(m2,~.+I(NormDistanceChosen^3))
+# Compare fit of models
+anova(m0,m1,m2,m3)
+```
+
+Summary of final model:
+
+```{r}
+summary(m3)
+pSimpleTotal = plot_model(m3,'eff',
+  terms="NormDistanceChosen[all]")
+pSimpleTotal
+```
+
+Marginal represents the variance explained by the fixed effects.
+Conditional represents the variance explained by the entire model.
+
+```{r}
+r.squaredGLMM(m3)
+```
+
+
+Statistics: (`r getStatReport(m0,m1,m2,m3,finalModel = m3, "../results/SimpleRes_totalFreq.txt")`)
+
+
+Same analysis using GAM with binomial distribution:
+
+```{r}
+mGAM = gam(cbind(totalNFreq,totalEFreq) ~ 
+             s(NormDistanceChosen,k=4) + 
+             s(Set,bs="re") + 
+             s(EngLexeme,bs="re"),
+           data = d, family = "binomial")
+summary(mGAM)
+plot.gam(mGAM,
+         ylab="Relative Norse Freq",
+         xlab="Distance between forms",
+         select = 1)
+abline(h=0)
+text(0.275,0.5,"Norse More Likely")
+text(0.4,-0.6,"English More Likely")
+```
+
+The raw frequency of Norse forms is negatively correlated with distance: 
+
+```{r}
+mNorseFreq = glmer(totalNFreq ~ NormDistance + 
+                     (1|Set) + (1|NorseLexeme),
+                   data = d, family = "poisson")
+```
+
+The distribution of Norse proportions is bimodal, with most terms having either low or high proportions. This isn't ideal for the binomial models above, so we also test the same model using a beta binomial distribution, which can fit bimodal binomial distributions. The result is very similar to the others:
+
+```{r cache=T}
+d$totalAllFreq = d$totalNFreq + d$totalEFreq
+mBinomBeta = brm(totalNFreq | trials(totalAllFreq) ~ 
+               1 + NormDistanceChosen + 
+               I(NormDistanceChosen^2) + 
+               I(NormDistanceChosen^3) +
+             (1|Set) + (1|EngLexeme),
+           data = d, family = "beta_binomial")
+summary(mBinomBeta)
+pred = ggpredict(mBinomBeta,terms="NormDistanceChosen[all]")
+ggplot(pred,aes(x=x,y=predicted,ymin=conf.low,ymax=conf.high)) +
+  geom_ribbon(alpha=0.3)+
+  geom_line() +
+  xlab("Distance") + 
+  ylab("Predicted Likelihood")
+```
+
+
+\clearpage
+\newpage
+
+
+## Feature-based distance (total frequency)
+
+We use nested model comparison to evaluate whether higher-order variables should be added (i.e. how non-linear the relationships is).
+
+```{r}
+d$NormDistanceChosen = d$NormFeatureDistance
+# Baseline model
+m0 = glmer(cbind(totalNFreq,totalEFreq) ~ 
+             1 + (1|Set) + (1|EngLexeme),
+           data = d, family = "binomial")
+# Add the distance measure
+m1 = update(m0,~.+NormDistanceChosen)
+# Add quadratic term
+m2 = update(m1,~.+I(NormDistanceChosen^2))
+# Add cubic term
+m3 = update(m2,~.+I(NormDistanceChosen^3))
+# Compare fit of models
+anova(m0,m1,m2,m3)
+```
+
+Summary of final model:
+
+```{r}
+summary(m3)
+pFeatureTotal = plot_model(m3,'eff',
+  terms="NormDistanceChosen[all]")
+pFeatureTotal
+```
+
+Statistics: (`r getStatReport(m0,m1,m2,m3,finalModel = m3, "../results/FeatureRes_totalFreq.txt")`)
+
+Same analysis using GAM with binomial distribution:
+
+```{r}
+mGAM = gam(cbind(totalNFreq,totalEFreq) ~ 
+             s(NormDistanceChosen,k=4) + 
+             s(Set,bs="re") + 
+             s(EngLexeme,bs="re"),
+           data = d, family = "binomial")
+summary(mGAM)
+plot.gam(mGAM,
+         ylab="Relative Norse Freq",
+         xlab="Distance between forms",
+         select = 1)
+abline(h=0)
+text(0.275,0.5,"Norse More Likely")
+text(0.4,-0.6,"English More Likely")
+```
+
+\clearpage
+\newpage
+
+## Historical distance (total frequency)
+
+We use nested model comparison to evaluate whether higher-order variables should be added (i.e. how non-linear the relationships is).
+
+```{r}
+d$NormDistanceChosen = d$NormHistoricalDistance
+# Baseline model
+m0 = glmer(cbind(totalNFreq,totalEFreq) ~ 
+             1 + (1|Set) + (1|EngLexeme),
+           data = d, family = "binomial")
+# Add the distance measure
+m1 = update(m0,~.+NormDistanceChosen)
+# Add quadratic term
+m2 = update(m1,~.+I(NormDistanceChosen^2))
+# Add cubic term
+m3 = update(m2,~.+I(NormDistanceChosen^3))
+# Compare fit of models
+anova(m0,m1,m2,m3)
+```
+
+Summary of final model:
+
+```{r}
+summary(m3)
+pHistoricalTotal = plot_model(m3,'eff',
+  terms="NormDistanceChosen[all]")
+pHistoricalTotal
+```
+
+Statistics: (`r getStatReport(m0,m1,m2,m3,finalModel = m3, "../results/HistoricalRes_totalFreq.txt")`)
+
+Same analysis using GAM with binomial distribution:
+
+```{r}
+mGAM = gam(cbind(totalNFreq,totalEFreq) ~ 
+             s(NormDistanceChosen,k=4) + 
+             s(Set,bs="re") + 
+             s(EngLexeme,bs="re"),
+           data = d, family = "binomial")
+summary(mGAM)
+plot.gam(mGAM,
+         ylab="Relative Norse Freq",
+         xlab="Distance between forms",
+         select = 1)
+abline(h=0)
+text(0.275,0.5,"Norse More Likely")
+text(0.4,-0.6,"English More Likely")
+```
+
+
+\clearpage
+\newpage
+
+Summary of results for total frequency analyses:
+
+```{r,fig.show='hide'}
+bigPlot = grid.arrange(
+             pSimpleTotal + 
+               ggtitle("Total Frequency Analysis") + 
+               coord_cartesian(ylim = c(0,1))+
+               xlab("Sound Class Distance\nBetween Forms")+
+               ylab("Proportion of Norse Terms"),
+             pFeatureTotal+ 
+               ggtitle("") + 
+               theme(axis.title.y = element_blank(),
+                     axis.text.y=element_blank())+
+               coord_cartesian(ylim = c(0,1))+
+               xlab("Feature Distance\nBetween Forms"),
+             pHistoricalTotal+ 
+               ggtitle("") + 
+               theme(axis.title.y = element_blank(),
+                     axis.text.y=element_blank())+
+               coord_cartesian(ylim = c(0,1))+
+               xlab("Historical Distance\nBetween Forms"),
+             nrow=1,widths=c(1.3,1,1))
+pdf("../results/BigEffectsPlot_totalFreq.pdf",width = 8,height=3)
+  plot(bigPlot)
+dev.off()
+```
+
+```{r out.width="\\linewidth", echo=F}
+knitr::include_graphics("../results/BigEffectsPlot_totalFreq.pdf")
+```
+
+
+
+\clearpage
+\newpage
+
+
+
+```{r eval=F,echo=F}
+# Set-level frequency analysis
+
+#The analysis below collapses the data over sets, taking the total frequency and the mean of the distances. Averaging over form pair distances may not be very meaningful.
+d3 = data.frame()
+allSets = unique(d$Set)
+for(i in 1:length(englishFrequencyColumns)){
+  E = d[,englishFrequencyColumns[i]]
+  E = tapply(E,d$Set,sum)
+  E = E[allSets]
+  E[is.na(E)] = 0
+  N = d[,norseFrequencyColumns[i]]
+  N = tapply(N,d$Set,sum)
+  N = N[allSets]
+  N[is.na(N)] = 0
+  
+  MeanNormFeatureDistance = tapply(d$NormHistoricalDistance, d$Set, mean)
+  MeanNormFeatureDistance = MeanNormFeatureDistance[allSets]
+  
+  d3 = rbind(d3,
+     data.frame(Set = allSets,
+                Source = gsub("EFreq","",englishFrequencyColumns[i]),
+                NFreq = N,
+                EFreq = E,
+                MeanNormFeatureDistance = MeanNormFeatureDistance))
+}
+
+d3 = d3[!is.na(d3$MeanNormFeatureDistance),]
+d3 = d3[d3$NFreq+d3$EFreq>0,]
+d3$Age = [d3$Source]
+d3$Age = factor(d3$Age,ordered=T)
+d3$Source = factor(d3$Source,
+                   levels = names())
+
+d3$NProp = d3$NFreq / (d3$NFreq+d3$EFreq)
+ggplot(d3, aes(x=Source,y=NProp)) +
+  geom_violin() +
+  geom_boxplot(width=0.2)
+
+
+m2Set = glmer(cbind(NFreq,EFreq) ~ 
+              Age +
+              MeanNormFeatureDistance+
+              (1|Set) + (1|Source),
+            data = d3, family = "binomial")
+summary(m2Set)
+
+plot_model(m2Set,"eff",terms="MeanNormFeatureDistance[all]")
+
+m2SetGAM = gam(cbind(NFreq,EFreq) ~ 
+             s(MeanNormFeatureDistance,k=4) + 
+             s(Set,bs="re") + 
+             s(Source,bs="re"),
+           data = d3, family = "binomial")
+
+summary(m2SetGAM)
+plot.gam(m2SetGAM,
+         ylab="Relative Norse Freq",
+         xlab="Distance between forms",
+         select = 1)
+```
+
+## Exploratory analyses
+
+### Word Class
+
+It is possible that lexical choices differ by word class. For example, verbs may be more resistant to integration. We test this by adding word class as a predictor. Since some word forms appear as several classes, we treat word class as a series of independent binary variables indicating the possibility or not of the word appearing as this class. 
+
+```{r}
+classes = unique(trimws(unlist(strsplit(unique(d$Class),"/"))))
+classes = classes[!is.na(classes)]
+classNames = paste0("Class.",gsub(" ",".",classes))
+for(i in 1:length(classes)){
+  d[,classNames[i]] = grepl(paste0("^",classes[i]),d$Class)
+}
+```
+
+Build a null model with non-linear distance, as above:
+
+```{r}
+d$NormDistanceChosen = d$NormDistance
+mC0 = glmer(cbind(totalNFreq,totalEFreq) ~ 
+             1 + NormDistanceChosen + 
+               I(NormDistanceChosen^2) + 
+               I(NormDistanceChosen^3) +
+             (1|Set) + (1|EngLexeme),
+           data = d, family = "binomial")
+```
+
+Adding the verb class variable does not improve the fit of the model:
+
+```{r}
+mC1a = update(mC0,~.+Class.verb)
+anova(mC0,mC1a)
+```
+
+Adding all other classes does not improve the fit of the model:
+
+```{r}
+mC1b = update(mC0,~.+Class.adverb + Class.preposition + Class.noun +
+               Class.numeral + Class.adjective + Class.verb + 
+               Class.indefinite.pronoun + Class.interjection)
+
+anova(mC0,mC1b)
+summary(mC1b)
+```
+
+### Diagnostic consonants
+
+Some Norse words have more salient diagnostic segments - they sound 'more Norse'. For example, the presence of Velar consonants (e.g. /g/ vs /j/, /sk/ vs post-alveolar fricative, /k/ vs post-alveolar affricate).
+
+For example, the average Norse proportion is higher for Norse forms words with 'g':
+
+```{r}
+boxplot(d$NorseProp ~ grepl("g",d$NorseForm))
+```
+
+To test this systematically, we calculate a Norse Diagnostic Score: cases where these segments are diagnostic of the differences between Norse and English forms (the score is potentially more than one, but in our data there are only zero and one):
+
+```{r}
+d$NorseDiagnosticScore = 
+  (grepl("g",d$NorseForm) & !grepl("g",d$EngForm))+
+  (grepl("ɣ",d$NorseForm) & !grepl("ɣ",d$EngForm)) +
+  (grepl("sk",d$NorseForm) & !grepl("sk",d$EngForm))+
+  # (k in Norse vs ʧ in English)
+  (grepl("k",d$NorseForm) & grepl("ʧ",d$EngForm))
+
+d$NorseDiagnosticScore = factor(d$NorseDiagnosticScore)
+
+boxplot(d$NorseProp~ d$NorseDiagnosticScore)
+t.test(d$NorseProp~ d$NorseDiagnosticScore)
+```
+
+Adding the Norse Diagnostic Score to the model significantly improves the fit of the model. The model suggests that Norse forms which are more obviously Norse have a lower chance of being selected overall.
+
+```{r}
+d$NormDistanceChosen = d$NormDistance
+mD0 = glmer(cbind(totalNFreq,totalEFreq) ~ 
+             1 + NormDistanceChosen + 
+               I(NormDistanceChosen^2) + 
+               I(NormDistanceChosen^3) +
+             (1|Set) + (1|EngLexeme),
+           data = d, family = "binomial")
+mD1 = update(mD0, ~.+NorseDiagnosticScore)
+anova(mD0,mD1)
+summary(mD1)
+
+plot_model(mD1,'eff', terms="NorseDiagnosticScore") +
+  ylab("Likelihood of choosing Norse term") +
+  xlab("Norse Diagnostic Score") +
+  ggtitle("")
+
+get_model_data(mD1,'eff', terms="NorseDiagnosticScore")
+```
+
+The effect of form distance is unaffected:
+
+```{r}
+plot_model(mD1,'eff',terms="NormDistanceChosen[all]")
+```
+
+
+```{r eval=F,echo=F}
+d2$NorseDiagnosticScore = 
+  (grepl("g",d2$NorseForm) & !grepl("g",d2$EngForm))+
+  (grepl("ɣ",d2$NorseForm) & !grepl("ɣ",d2$EngForm)) +
+  (grepl("sk",d2$NorseForm) & !grepl("sk",d2$EngForm))+
+  (grepl("k",d2$NorseForm) & grepl("ʧ",d2$EngForm))
+
+d2$NorseDiagnosticScore = factor(d2$NorseDiagnosticScore)
+d2$NormDistanceChosen  = d2$NormDistance
+mDS0 = glmer(cbind(NFreq,EFreq) ~ Age + Alliteration + 
+               1 + NormDistanceChosen + 
+               I(NormDistanceChosen^2) + 
+               I(NormDistanceChosen^3) +
+              (1|Set) + (1|Source) + 
+             (1|EngForm2),
+           data = d2, family = "binomial",
+           glmerControl(optimizer = "bobyqa"))
+mDS1 = update(mDS0, ~.+NorseDiagnosticScore)
+anova(mDS0,mDS1)
+plot_model(mDS1,'eff', terms="NorseDiagnosticScore") +
+  ylab("Likelihood of choosing Norse term") +
+  xlab("Norse Diagnostic Score") +
+  ggtitle("")
+```
+
+
+
+# Source-level frequency analysis
+
+This analysis uses source-level observations: each observation is the frequency of a pair of forms within a particular source. This also lets us control for source-level features like the source itself as a random effect, the age of the source, and whether alliteration might affect decisions.
+
+There may be multiple orthographic forms for each unique full form for comparison, so first, we collapse the data over unique pairs. We also restructure the data to be in 'long' format.
+
+```{r}
+d2 = data.frame()
+for(i in 1:length(englishFrequencyColumns)){
+ dx = data.frame(
+   Set = d$Set,
+   EngForm = d$EngForm,
+   NorseForm = d$NorseForm,
+   NormDistance = d$NormDistance,
+   NormFeatureDistance = d$NormFeatureDistance,
+   NormHistoricalDistance = d$NormHistoricalDistance,
+   NFreq = d[,norseFrequencyColumns[i]],
+   EFreq = d[,englishFrequencyColumns[i]],
+   Source = englishFrequencyColumns[i],
+   Alliteration = d$Alliteration)
+ dx = dx[rowSums(dx[,c("NFreq","EFreq")],na.rm = T)>0,]
+ uforms = paste(dx$Set,dx$EngForm,dx$NorseForm)
+ dx = data.frame(
+   Set = tapply(dx$Set,uforms,head,n=1),
+   EngForm = tapply(dx$EngForm,uforms,head,n=1),
+   NorseForm = tapply(dx$NorseForm,uforms,head,n=1),
+   NormDistance = tapply(dx$NormDistance,uforms,head,n=1),
+   NormFeatureDistance = tapply(dx$NormFeatureDistance,uforms,head,n=1),
+   NormHistoricalDistance = tapply(dx$NormHistoricalDistance,uforms,head,n=1),
+   NFreq = tapply(dx$NFreq,uforms,sum,na.rm=T),
+   EFreq = tapply(dx$EFreq,uforms,sum,na.rm=T),
+   Source = englishFrequencyColumns[i],
+   Alliteration = tapply(dx$Alliteration,uforms,head,n=1))
+ d2 = rbind(d2,dx)
+}
+
+d2$Set = factor(d2$Set)
+d2$Source = factor(d2$Source)
+
+# Make a variable for each unique form within a set
+d2$EngForm2 = paste(d2$Set,d2$EngForm)
+d2$NorseForm2 = paste(d2$Set,d2$NorseForm)
+d2$EngForm2 = factor(d2$EngForm2)
+
+# Remove any cases with zero frequency
+d2 = d2[!(d2$NFreq==0 & d2$EFreq==0),]
+
+# Proportion of norse forms
+d2$NProp = 100*(d2$NFreq/(d2$NFreq+d2$EFreq))
+```
+
+Modelling age is difficult, since exact dates are not known. It would be possible to model the date of publication as an ordinal variable, for example assuming FCPC > Ormulum > {Havelok, GenAndEx} > CursorMundi > {Mannyng, GawainPoet} >  WarsAlexander >  StErkenwald. However, the texts from the Corpus of Middle English span several centuries, and so are hard to place in this order. Instead, we simply use the century as an ordered category.
+
+```{r}
+AgeCategories = 
+    c("EFreqFCPC"=12, 
+      "EFreqOrmulum"=12, 
+     "EFreqHavelok"=13,
+     "EFreqGenAndEx" = 14,
+     "EFreqCursorMundi" = 14,
+     "EFreqGawainPoet" = 14,
+     "EFreqStErkenwald" = 15,
+     "EFreqMannyng" = 15,
+     "EFreqWarsAlexander" = 15,
+     "EFreqLinc"=15,
+	   "EFreqNott"=15,
+	   "EFreqNorf"=15,
+	   "EFreqRolle"=15)
+```
+
+```{r}
+d2$Age = AgeCategories[d2$Source]
+d2$Age = factor(d2$Age,ordered=T)
+
+contrasts(d2$Age) = contr.sum(length(unique(d2$Age)))
+
+mean(d2$NFreq/(d2$NFreq+d2$EFreq))
+range(d2$NFreq/(d2$NFreq+d2$EFreq))
+
+mean(d2$NormDistance)
+```
+
+Alliteration only applies to poetry sources: Gawain, St Erkenwold, and Wars of Alexander. So turn all others to 'false':
+
+```{r}
+d2[!d2$Source %in% 
+     c("EFreqGawainPoet", 
+       "EFreqStErkenwald", 
+       "EFreqWarsAlexander",
+       "EFreqLinc",
+	     "EFreqNott",
+	     "EFreqNorf",
+	     "EFreqRolle"),]$Alliteration = FALSE
+d2$Alliteration = factor(d2$Alliteration)
+```
+
+
+```{r warning=F,message=F}
+gPairs = ggpairs(d2[,c("NormDistance","NormFeatureDistance",
+              "NormHistoricalDistance","NProp")],
+        columnLabels = c("Sound Class Distance",
+                         "Feature Distance",
+                         "Historical Distance",
+                         "Freq (% Norse)"),
+        rowLabels = c("Sound Class Distance",
+                         "Feature Distance",
+                         "Historical Distance",
+                         "Freq (% Norse)"))
+
+pdf("../results/GPairs.pdf",width=6,height=5.5)
+  gPairs
+dev.off()
+```
+
+## Simple distance
+
+Use a mixed effects model to predict the frequency of Norse and English forms by a random effect for cognate Set and Source. We add a main effect of age of source, then introduce the normalised distance measure along with its non-linear terms.
+
+```{r}
+m0 = glmer(cbind(NFreq,EFreq) ~ Age + Alliteration + 
+              (1|Set) + (1|Source) + 
+             (1|EngForm2),
+           data = d2, family = "binomial",
+           glmerControl(optimizer = "bobyqa"))
+# Add the distance measure
+m1 = update(m0,~.+NormDistance)
+# Add quadratic term
+m2 = update(m1,~.+I(NormDistance^2))
+# Add cubic term
+m3 = update(m2,~.+I(NormDistance^3))
+```
+
+Compare fit of models:
+
+```{r}
+anova(m0,m1,m2,m3)
+```
+
+Summary of final model:
+
+```{r}
+summary(m3)
+```
+
+Norse frequency varies with distance. The plot below shows the marginal effects, holding discrete predictors constant at their proportions (not reference level):
+
+```{r}
+pNormSimple = 
+  plot_model(m3,'eff', terms="NormDistance[all]") +
+  xlab("Sound Class Distance\nBetween Forms") +
+  ylab("Proportion of Norse Terms") +
+  ggtitle("")+
+    coord_cartesian(ylim=c(0,1))
+pNormSimple
+```
+
+Effects over time and of alliteration:
+
+```{r}
+plot_model(m3,'eff', terms="Age [all]")
+plot_model(m3,'eff', terms="Alliteration")
+```
+
+The GAM model seems a little different, showing a smaller effect at lower distances.
+
+```{r}
+mGAM = gam(cbind(NFreq,EFreq) ~ 
+             s(NormDistance,k=4) + 
+             s(Age,bs = "re") + 
+             s(Set,bs="re") + 
+             s(Source,bs="re")+ 
+             s(EngForm2,bs="re"),
+           data = d2, family = "binomial")
+summary(mGAM)
+
+plot_model(mGAM,"pred",terms="NormDistance") +
+  ylab("Proportion of Norse terms") +
+  xlab("Distance between forms")
+```
+
+Statistics for the simple measure:
+
+(`r getStatReport(m0,m1,m2,m3,finalModel = m3, "../results/SimpleRes.txt")`)
+
+
+\clearpage
+\newpage
+
+## Feature-based distance
+
+Same analysis as the simple distance above:
+
+```{r}
+m0 = glmer(cbind(NFreq,EFreq) ~ Age + Alliteration
+              + (1|Set) + (1|Source) + 
+             (1|EngForm2),
+           data = d2, family = "binomial")
+m1 = update(m0,~.+NormFeatureDistance)
+m2 = update(m1,~.+I(NormFeatureDistance^2))
+m3 = update(m2,~.+I(NormFeatureDistance^3))
+anova(m0,m1,m2,m3)
+summary(m3)
+```
+
+```{r}
+pNormFeature = 
+  plot_model(m3,'eff', terms="NormFeatureDistance[all]")+
+    xlab("Feature-Based Distance\nBetween Forms") +
+    ylab("Proportion of Norse Terms") +
+    ggtitle("")+
+    coord_cartesian(ylim=c(0,1))
+pNormFeature
+```
+
+Effects over time and of alliteration:
+
+```{r}
+plot_model(m3,'eff', terms="Age [all]")
+plot_model(m3,'eff', terms="Alliteration")
+```
+
+GAM model:
+
+```{r}
+mGAM = gam(cbind(NFreq,EFreq) ~ 
+             s(NormFeatureDistance,k=4) + 
+             s(Age,bs = "re") + 
+             s(Set,bs="re") + 
+             s(Source,bs="re")+ 
+             s(EngForm2,bs="re"),
+           data = d2, family = "binomial")
+summary(mGAM)
+plot.gam(mGAM,
+         ylab="Relative Norse Freq",
+         xlab="Distance between forms",
+         select = 1)
+```
+
+`r getStatReport(m0,m1,m2,m3,finalModel = m3, "../results/FeatureRes.txt")`
+
+
+\clearpage
+\newpage
+
+## Historical distance
+
+Same analysis as the simple distance above:
+
+```{r}
+m0 = glmer(cbind(NFreq,EFreq) ~ Age + Alliteration +
+             (1|Set) + (1|Source) +
+             (1|EngForm2),
+           data = d2, family = "binomial",
+           control=glmerControl(optimizer="bobyqa"))
+m1 = update(m0,~.+NormHistoricalDistance)
+m2 = update(m1,~.+I(NormHistoricalDistance^2),
+            control=glmerControl(optimizer="bobyqa"))
+m3 = update(m2,~.+I(NormHistoricalDistance^3),
+            control=glmerControl(optimizer="bobyqa"))
+anova(m0,m1,m2,m3)
+```
+
+For this measure, the cubic term is marginal.
+
+This is the cubic model:
+
+```{r}
+summary(m3)
+plot_model(m3,'eff', terms="Age [all]")
+pNormHist = 
+  plot_model(m3,'eff', terms="NormHistoricalDistance[all]")+
+    xlab("Historical Distance\nBetween Forms") +
+    ylab("Proportion of Norse Terms") +
+    ggtitle("")+
+    coord_cartesian(ylim=c(0,1))
+pNormHist
+```
+
+And for comparison, the quadratic model:
+
+```{r}
+summary(m2)
+  plot_model(m2,'eff', terms="NormHistoricalDistance[all]")+
+    xlab("Historical Distance\nBetween Forms") +
+    ylab("Proportion of Norse Terms") +
+    ggtitle("")+
+    coord_cartesian(ylim=c(0,1))
+```
+
+There is little qualitative difference, so for sake of easy comparison with the other results, we use the cubic model.
+
+Effects over time and of alliteration:
+
+```{r}
+plot_model(m3,'eff', terms="Age [all]")
+plot_model(m3,'eff', terms="Alliteration")
+```
+
+GAM model:
+
+```{r}
+mGAM = gam(cbind(NFreq,EFreq) ~ Alliteration +
+             s(NormHistoricalDistance,k=4) + 
+             s(Age,bs = "re") + 
+             s(Set,bs="re") + 
+             s(Source,bs="re")+ 
+             s(EngForm2,bs="re"),
+           data = d2, family = "binomial")
+summary(mGAM)
+plot.gam(mGAM,
+         ylab="Relative Norse Freq",
+         xlab="Distance between forms",
+         select = 1)
+```
+
+`r getStatReport(m0,m1,m2,m3,finalModel = m3, "../results/HistoricalRes.txt")`
+
+
+\clearpage
+\newpage
+
+```{r,fig.show='hide'}
+bigPlot = grid.arrange(
+       pNormSimple +
+          ggtitle("Source-Level Analysis"),
+       pNormFeature+ 
+         ggtitle("") +
+         theme(axis.title.y=element_blank(),
+               axis.text.y=element_blank()),
+       pNormHist+ 
+         ggtitle("") +
+         theme(axis.title.y=element_blank(),
+               axis.text.y=element_blank()),
+       nrow=1,widths=c(1.3,1,1))
+pdf("../results/BigEffectsPlot.pdf",width = 8,height=3)
+  plot(bigPlot)
+dev.off()
+```
+
+```{r out.width="\\linewidth", echo=F}
+knitr::include_graphics("../results/BigEffectsPlot.pdf")
+```
+
+
+```{r}
+tSimple = read.csv("../results/SimpleRes_totalFreq.csv",
+                   stringsAsFactors = F)
+tFeature = read.csv("../results/FeatureRes_totalFreq.csv",
+                    stringsAsFactors = F)
+tHistorical = read.csv("../results/HistoricalRes_totalFreq.csv",
+                       stringsAsFactors = F)
+sSimple = read.csv("../results/SimpleRes.csv",
+                   stringsAsFactors = F)
+sFeature = read.csv("../results/FeatureRes.csv",
+                    stringsAsFactors = F)
+sHistorical = read.csv("../results/HistoricalRes.csv",
+                       stringsAsFactors = F)
+
+res = rbind(tSimple,tFeature,tHistorical)
+resNames = c(lldiff="Log Likelihood Difference",
+             Chisq="Chi Squared",pChi="p")
+resNames2 = names(res)
+resNames2[resNames2 %in% names(resNames)] = 
+  resNames[resNames2[resNames2 %in% names(resNames)]]
+
+res = res[,names(res)!="X"]
+res = cbind(Measure=rep(c("Sound Class","Feature","Historical"),each=3), res)
+res = rbind(c("","","Model Comparison","","","","",
+              "Model Estimate","",""),
+            resNames2,
+            res)
+
+write.table(res,file="../results/MainResults_totalFreq.csv",
+            sep = ",",col.names = F,row.names = F,fileEncoding = "UTF-8")
+
+
+res2 = res
+res2[3:11,] = rbind(sSimple,sFeature,sHistorical)
+
+write.table(res2,file="../results/MainResults_sourceLevel.csv",
+            sep = ",",col.names = F,row.names = F,fileEncoding = "UTF-8")
+
+```
+
+
+
+\clearpage
+\newpage
+
+
+
+# Comparison between texts
+
+Compare sources according to the difference in proportion of Norse terms for each set.
+
+```{r}
+g = read.xlsx("../data/SharedIntegrationOfCognatesData.xlsx",1)
+g = g[g$Etymology %in% c("Norse","English"),]
+# Ignore numerals in set name
+g$Set = gsub("[0-9]","",g$Set)
+
+nCols = names(g)[which(names(g)=="No..in.Ormulum"):which(names(g)=="Rolle")]
+for(col in nCols){
+  g[,col] = as.numeric(g[,col])
+}
+
+allSets = unique(g$Set)
+f = data.frame(Set = allSets)
+fLog = data.frame(Set = allSets)
+for(col in nCols){
+  gN = g[g$Etymology == "Norse",]
+  gE = g[g$Etymology == "English",]
+  fNorse = tapply(gN[,col],gN$Set,sum)[allSets]
+  fNorse[is.na(fNorse)] = 0
+  fEng = tapply(gE[,col],gE$Set,sum)[allSets]
+  fEng[is.na(fEng)] = 0
+  f[,col] = fNorse / (fEng+fNorse)
+  fLog[,col] = log10(1+fEng) - log10(1+fNorse)
+}
+
+nColsLabels = c("Ormulum","FCPC","Havelok","Genesis & Exodus",
+                "Mannyng", "Gawain-poet","Wars of Alexander", 
+                "St Erkenwald","Cursor Mundi","Lincolnshire",
+                "Nottinghamshire", "Norfolk","Rolle")
+
+mat = matrix(NA,nrow=length(nCols),
+             ncol = length(nCols))
+rownames(mat) = nColsLabels
+colnames(mat) = nColsLabels
+matLog = matrix(NA,nrow=length(nCols),
+                ncol = length(nCols))
+rownames(matLog) = nColsLabels
+colnames(matLog) = nColsLabels
+for(i in 1:length(nCols)){
+  iProp = f[,nCols[i]]
+  iPropLog = fLog[,nCols[i]]
+  for(j in 1:length(nCols)){
+    jProp = f[,nCols[j]]
+    jPropLog = fLog[,nCols[j]]
+    
+    diffs = abs(iProp-jProp)
+    diffs = diffs[!is.nan(diffs)]
+    diffs = diffs[!is.na(diffs)]
+    mat[nColsLabels[i],nColsLabels[j]] = mean(diffs)
+    
+    diffsLog = abs(iPropLog - jPropLog)
+    matLog[nColsLabels[i],nColsLabels[j]] = mean(diffsLog)
+  }
+}
+```
+
+```{r}
+phy = neighborNet(mat)
+plot(phy)
+
+pdf("../results/NeighbourNet.pdf")
+plot(phy)
+dev.off()
+
+phyLog = neighborNet(matLog)
+plot(phyLog)
+
+pdf("../results/NeighbourNet_Log.pdf")
+plot(phyLog)
+dev.off()
+```
