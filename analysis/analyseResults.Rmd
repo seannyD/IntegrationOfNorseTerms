@@ -28,7 +28,7 @@ The analysis covers the following sources:
 
 The data analysed here is the product of several processing steps. The file `data/SharedIntegrationOfCognatesData.xlsx` has the original transcribed data. This is cleaned and processed by the script `analysis/analyseTextDistances.py`, which draws some code from `analysis/CLTSFeatureBasedAlignment.py` which is mainly contributed by Johann Mattis List (see https://calc.hypotheses.org/1962 and https://gist.github.com/LinguList/7fac44813572f65259c872ef89fa64ad). The script calculates the distances between pairs of Norse and English forms according to three measures:
 
--  Simple distance from Keller (2023).
+-  Simple distance from Keller (2020).
 -  A feature-based distance.
 -  A historical distance that uses the likelihood of one segment historically replacing another.
 
@@ -86,6 +86,7 @@ library(GGally)
 library(MuMIn)
 library(brms)
 library(ggeffects)
+library(gamm4)
 ```
 
 # Load data
@@ -665,15 +666,47 @@ summary(mC1b)
 
 ### Diagnostic consonants
 
-Some Norse words have more salient diagnostic segments - they sound 'more Norse'. For example, the presence of Velar consonants (e.g. /g/ vs /j/, /sk/ vs post-alveolar fricative, /k/ vs post-alveolar affricate).
-
-For example, the average Norse proportion is higher for Norse forms words with 'g':
+Some Norse words have more salient diagnostic segments - they sound 'more Norse'. For example, the presence /sk/ vs post-alveolar fricative. Below, we create a variable that distinguishes pairs where the Norse includes /sk/ (and the English includes /ʃ/) from other cases, and enter this as a variable into the model to test whether it improves the prediction of the proportion of Norse usage.
 
 ```{r}
-boxplot(d$NorseProp ~ grepl("g",d$NorseForm))
+d$NorseDiagnosticSK = 
+  grepl("sk",d$NorseForm) & 
+  grepl("ʃ",d$EngForm) & 
+  !grepl("sk",d$EngForm)
+# (this isn't valid for all possible words,
+# but does identify the relevant data in
+# our sample)
+
+d$NorseDiagnosticSK = factor(d$NorseDiagnosticSK)
+  
+d$NormDistanceChosen = d$NormDistance
+mD0 = glmer(cbind(totalNFreq,totalEFreq) ~ 
+             1 + NormDistanceChosen + 
+               I(NormDistanceChosen^2) + 
+               I(NormDistanceChosen^3) +
+             (1|Set) + (1|EngLexeme),
+           data = d, family = "binomial")
+mD1 = update(mD0, ~.+NorseDiagnosticSK)
+anova(mD0,mD1)
+summary(mD1)
+
+plot_model(mD1,'eff', terms="NorseDiagnosticSK") +
+  ylab("Likelihood of choosing Norse term") +
+  xlab("Presence of /sk/") +
+  ggtitle("")
+
+get_model_data(mD1,'eff', terms="NorseDiagnosticSK")
 ```
 
-To test this systematically, we calculate a Norse Diagnostic Score: cases where these segments are diagnostic of the differences between Norse and English forms (the score is potentially more than one, but in our data there are only zero and one):
+Adding the Norse Diagnostic Score to the model significantly improves the fit of the model. The model suggests that Norse forms which are more obviously Norse have a lower chance of being selected overall. This is in line with the general findings: words that are obviously more different to the English forms are less likely to be integrated.
+
+The effect of form distance is unaffected by adding the presence of 'sk' as a variable:
+
+```{r}
+plot_model(mD1,'eff',terms="NormDistanceChosen[all]")
+```
+
+There are other consonant contrasts which are also diagnostic of Norse origin. For example, the presence of /g/ vs /j/ or /k/ vs post-alveolar affricate. However, these are only truly diagnostic in production when followed by a front vowel. Still, ignoring this complication for now, we calculate a Norse Diagnostic Score: cases where these segments are diagnostic of the differences between Norse and English forms (the score is potentially more than one, but in our data there are only zero and one):
 
 ```{r}
 d$NorseDiagnosticScore = 
@@ -1210,4 +1243,132 @@ plot(phyLog)
 pdf("../results/NeighbourNet_Log.pdf")
 plot(phyLog)
 dev.off()
+```
+
+# Bayesian modelling
+
+## Simple distance
+
+In this section, we replicate the analyses above using a Bayesian framework. As with the example of a Bayesian analysis above, we use a beta binomial framework.
+
+```{r cache=T}
+d$NormDistanceChosen = d$NormDistance
+d$totalAllFreq = d$totalNFreq + d$totalEFreq
+mBSimple = brm(totalNFreq | trials(totalAllFreq) ~ 
+               s(NormDistanceChosen) + 
+             (1|Set) + (1|EngLexeme),
+           data = d, family = "beta_binomial", 
+         silent = 2,refresh=0)
+summary(mBSimple)
+pred = ggpredict(mBSimple,
+                 terms="NormDistanceChosen")
+# Predict uses 10 trials
+pred$predicted = pred$predicted/10
+pred$conf.low = pred$conf.low/10
+pred$conf.high = pred$conf.high/10
+ggplot(pred,aes(x=x,y=predicted,ymin=conf.low,ymax=conf.high)) +
+  geom_ribbon(alpha=0.3)+
+  geom_line() +
+  xlab("Distance") + 
+  ylab("Predicted Likelihood")
+```
+
+In the analyses above, we set the number of knots at 4. We can test this setting by running two different models with different number of knots:
+
+```{r cache=T}
+mBSimple.k4 = brm(totalNFreq | trials(totalAllFreq) ~ 
+               s(NormDistanceChosen,k=4) + 
+             (1|Set) + (1|EngLexeme),
+           data = d, family = "beta_binomial", 
+         silent = 2,refresh=0)
+pred = ggpredict(mBSimple.k4,
+                 terms="NormDistanceChosen")
+# Predict uses 10 trials
+pred$predicted = pred$predicted/10
+pred$conf.low = pred$conf.low/10
+pred$conf.high = pred$conf.high/10
+ggplot(pred,aes(x=x,y=predicted,ymin=conf.low,ymax=conf.high)) +
+  geom_ribbon(alpha=0.3)+
+  geom_line() +
+  xlab("Distance") + 
+  ylab("Predicted Likelihood")
+```
+
+
+```{r cache=T}
+mBSimple.k8 = brm(totalNFreq | trials(totalAllFreq) ~ 
+               s(NormDistanceChosen,k=8) + 
+             (1|Set) + (1|EngLexeme),
+           data = d, family = "beta_binomial", 
+         silent = 2,refresh=0)
+pred = ggpredict(mBSimple.k8,
+                 terms="NormDistanceChosen[all]")
+# Predict uses 10 trials
+pred$predicted = pred$predicted/10
+pred$conf.low = pred$conf.low/10
+pred$conf.high = pred$conf.high/10
+ggplot(pred,aes(x=x,y=predicted,ymin=conf.low,ymax=conf.high)) +
+  geom_ribbon(alpha=0.3)+
+  geom_line() +
+  xlab("Distance") + 
+  ylab("Predicted Likelihood")
+```
+
+```{r echo=F,eval=F}
+# (to formally test, on a machine where 'extraDistr' can be installed!)
+kTest = loo(mBSimple.k4,mBSimple.k8)
+MuMIn::AICc(mBSimple.k4, mBSimple.k8)
+```
+
+There is very little difference in the overall shape of the relationship between k=4 and k=8. At least, there are no conclusions we would draw from the k=8 fit that we would not draw from the k=4 fit. We decided to stick with the simpler model (k=4).
+
+Our conclusion was, as stated in the discussion: "we argue that the overall picture is that the effect exists for extreme ends of form distance". That is, there may be some non-linear effect in the middle, but the basic picture is that low distance = likely to be Norse, high distance = likely to be Native. All of the analyses fit this general description.
+
+## Feature distance
+
+```{r cache=T}
+d$NormDistanceChosen = d$NormFeatureDistance
+d$totalAllFreq = d$totalNFreq + d$totalEFreq
+mBSimple = brm(totalNFreq | trials(totalAllFreq) ~ 
+               s(NormDistanceChosen) + 
+             (1|Set) + (1|EngLexeme),
+           data = d, family = "beta_binomial", 
+         silent = 2,refresh=0)
+summary(mBSimple)
+pred = ggpredict(mBSimple,
+                 terms="NormDistanceChosen")
+# Predict uses 10 trials
+pred$predicted = pred$predicted/10
+pred$conf.low = pred$conf.low/10
+pred$conf.high = pred$conf.high/10
+ggplot(pred,aes(x=x,y=predicted,ymin=conf.low,ymax=conf.high)) +
+  geom_ribbon(alpha=0.3)+
+  geom_line() +
+  xlab("Distance") + 
+  ylab("Predicted Likelihood")
+```
+
+
+## Historical distance
+
+```{r cache=T}
+d$NormDistanceChosen = d$NormHistoricalDistance
+d$totalAllFreq = d$totalNFreq + d$totalEFreq
+mBSimple = brm(totalNFreq | trials(totalAllFreq) ~ 
+               s(NormDistanceChosen) + 
+             (1|Set) + (1|EngLexeme),
+           data = d, family = "beta_binomial", 
+         silent = 2,refresh=0)
+summary(mBSimple)
+pred = ggpredict(mBSimple,
+                 terms="NormDistanceChosen")
+# Predict uses 10 trials
+pred$predicted = pred$predicted/10
+pred$conf.low = pred$conf.low/10
+pred$conf.high = pred$conf.high/10
+ggplot(pred,aes(x=x,y=predicted,ymin=conf.low,ymax=conf.high)) +
+  geom_ribbon(alpha=0.3)+
+  geom_line() +
+  xlab("Distance") + 
+  ylab("Predicted Likelihood")
 ```
