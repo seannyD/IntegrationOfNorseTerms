@@ -1255,7 +1255,7 @@ In this section, we replicate the analyses above using a Bayesian framework. As 
 d$NormDistanceChosen = d$NormDistance
 d$totalAllFreq = d$totalNFreq + d$totalEFreq
 mBSimple = brm(totalNFreq | trials(totalAllFreq) ~ 
-               s(NormDistanceChosen) + 
+               s(NormDistanceChosen, k=4) + 
              (1|Set) + (1|EngLexeme),
            data = d, family = "beta_binomial", 
          silent = 2,refresh=0)
@@ -1330,7 +1330,7 @@ Our conclusion was, as stated in the discussion: "we argue that the overall pict
 d$NormDistanceChosen = d$NormFeatureDistance
 d$totalAllFreq = d$totalNFreq + d$totalEFreq
 mBSimple = brm(totalNFreq | trials(totalAllFreq) ~ 
-               s(NormDistanceChosen) + 
+               s(NormDistanceChosen, k=4) + 
              (1|Set) + (1|EngLexeme),
            data = d, family = "beta_binomial", 
          silent = 2,refresh=0)
@@ -1355,7 +1355,7 @@ ggplot(pred,aes(x=x,y=predicted,ymin=conf.low,ymax=conf.high)) +
 d$NormDistanceChosen = d$NormHistoricalDistance
 d$totalAllFreq = d$totalNFreq + d$totalEFreq
 mBSimple = brm(totalNFreq | trials(totalAllFreq) ~ 
-               s(NormDistanceChosen) + 
+               s(NormDistanceChosen, k=4) + 
              (1|Set) + (1|EngLexeme),
            data = d, family = "beta_binomial", 
          silent = 2,refresh=0)
